@@ -1,119 +1,87 @@
 import os
 import streamlit as st
-import time
-import asyncio
-import sys
-import requests
-from bs4 import BeautifulSoup
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import RetrievalQA
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import SeleniumURLLoader
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
-from langchain_core.documents import Document  # ✅ Import Document class
 from dotenv import load_dotenv
+from langchain_community.document_loaders import WebBaseLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAI
+from langchain.chains import RetrievalQA
 
-# ✅ Fix Windows async issue
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-# ✅ Load API Key
+# Load environment variables
 load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# ✅ Streamlit UI
-st.title("EquiBot : News Research Tool 📈")
-st.sidebar.title("Enter News Article URLs")
+# Validate API key
+if not OPENAI_API_KEY:
+    st.error("⚠️ OpenAI API key is missing! Please add it to your `.env` file.")
+    st.stop()
 
-# ✅ Collect URLs
+# Streamlit UI
+st.title("📰 News Research Tool 📈")
+st.sidebar.title("🔗 Enter News URLs")
+
+# Input URLs
 urls = []
 for i in range(3):
     url = st.sidebar.text_input(f"URL {i+1}")
-    urls.append(url.strip())
+    if url:
+        urls.append(url)  # Add only non-empty URLs
 
-process_url_clicked = st.sidebar.button("Process URLs")
-faiss_index_path = "faiss_index"
+# Process button
+process_url_clicked = st.sidebar.button("🚀 Process URLs")
 
-main_placeholder = st.empty()
-llm = ChatOpenAI(temperature=0.3, model_name="gpt-4")
+# File paths for FAISS storage
+FAISS_INDEX_PATH = "faiss_index"
 
-def extract_text_from_url(url):
-    """ Extracts main article text from a URL using BeautifulSoup """
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
-            
-            # Extract article text
-            article_text = "\n".join([p.get_text() for p in soup.find_all("p")])
-            return article_text.strip() if article_text else None
-        else:
-            print(f"⚠️ Unable to fetch {url}, Status Code: {response.status_code}")
-            return None
-    except Exception as e:
-        print(f"❌ Error extracting {url}: {str(e)}")
-        return None
+# Load OpenAI model
+llm = OpenAI(temperature=0.3, model_name="gpt-4", openai_api_key=OPENAI_API_KEY)
 
 if process_url_clicked:
-    valid_texts = []
-    
-    # ✅ Extract text from URLs
-    for url in urls:
-        if url:
-            text = extract_text_from_url(url)
-            if text:
-                valid_texts.append({"text": text, "source": url})
-                print(f"✅ Extracted text from: {url}")
-            else:
-                print(f"⚠️ No readable content from {url}")
-
-    if not valid_texts:
-        st.error("❌ No valid article content found.")
+    if not urls:
+        st.warning("⚠️ Please enter at least one URL before processing.")
     else:
-        # ✅ Split text into chunks
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000)
-        docs = []
-        for item in valid_texts:
-            split_texts = text_splitter.split_text(item["text"])
-            for txt in split_texts:
-                docs.append(Document(page_content=txt, metadata={"source": item["source"]}))  # ✅ Fix: Convert to Document
+        st.write("🔄 Fetching and processing articles...")
 
-        # ✅ Store in FAISS
-        embeddings = OpenAIEmbeddings()
-        vectorstore_openai = FAISS.from_documents(docs, embeddings)
-        print(f"✅ FAISS Indexed {len(vectorstore_openai.docstore._dict)} chunks.")
+        # ✅ Load articles using Playwright
+        loader = WebBaseLoader(urls)
+        docs = loader.load()
+
+        if not docs:
+            st.error("⚠️ No valid data retrieved from the URLs. Please check and try again.")
+            st.stop()
+
+        # ✅ Split text into chunks
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        doc_chunks = text_splitter.split_documents(docs)
+
+        # ✅ Generate embeddings and store in FAISS
+        embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+        vectorstore = FAISS.from_documents(doc_chunks, embeddings)
 
         # ✅ Save FAISS index
-        vectorstore_openai.save_local(faiss_index_path)
-        main_placeholder.text("FAISS index stored successfully! ✅")
+        vectorstore.save_local(FAISS_INDEX_PATH)
+        st.success("✅ Data indexed successfully!")
 
-query = st.text_input("Enter your question:")
+# Query Input
+query = st.text_input("🔍 Ask a question based on the articles:")
+
 if query:
-    if os.path.exists(faiss_index_path):
-        # ✅ Load FAISS
-        embeddings = OpenAIEmbeddings()
-        vectorstore = FAISS.load_local(faiss_index_path, embeddings, allow_dangerous_deserialization=True)
+    # ✅ Load FAISS index if available
+    if os.path.exists(FAISS_INDEX_PATH):
+        embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
+        vectorstore = FAISS.load_local(FAISS_INDEX_PATH, embeddings)
 
-        # ✅ Retrieve context
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+        # ✅ Setup RetrievalQA
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+        chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
 
-        # ✅ Debug retrieval
-        retrieved_docs = retriever.get_relevant_documents(query)
-        if len(retrieved_docs) == 0:
-            st.error("❌ No relevant information found.")
-        else:
-            print(f"🔍 Retrieved {len(retrieved_docs)} documents.")
+        # ✅ Get answer
+        st.write("🤖 Generating answer...")
+        result = chain.invoke({"query": query})
 
-            # ✅ Answer using RetrievalQA
-            chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever, chain_type="stuff")
-            result = chain({"query": query})
-
-            # ✅ Display answer
-            st.header("Answer:")
-            st.write(result["result"])
-
-            # ✅ Show sources
-            st.subheader("Sources:")
-            for doc in retrieved_docs:
-                st.write(doc.metadata.get("source", "Unknown Source"))
+        # ✅ Display answer
+        st.header("📢 Answer:")
+        st.write(result["result"])
+    else:
+        st.error("⚠️ No FAISS index found. Please process URLs first!")
