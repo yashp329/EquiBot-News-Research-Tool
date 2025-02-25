@@ -10,7 +10,7 @@ from langchain.chains import RetrievalQA
 
 # Load environment variables
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("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")
 
 # Validate API key
 if not OPENAI_API_KEY:
