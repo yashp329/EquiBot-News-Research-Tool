@@ -1,0 +1,10 @@
+streamlit
+langchain
+langchain-community
+selenium
+webdriver-manager
+openai
+faiss-cpu
+python-dotenv
+beautifulsoup4
+requests
